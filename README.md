@@ -9,4 +9,8 @@ This repository contains the automation scripts required to provision a brand-ne
 
 ---
 
+## Step 1: Initial Server Setup
+Run the following command as `root` to download and execute the setup script:
+
+```bash
 curl -o ~/setup.sh [https://raw.githubusercontent.com/omodingmike/setup_vps/main/setup.sh](https://raw.githubusercontent.com/omodingmike/setup_vps/main/setup.sh) && chmod +x ~/setup.sh && ./setup.sh
