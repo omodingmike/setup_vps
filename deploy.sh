@@ -10,7 +10,7 @@ echo "========================================="
 # ----------------------------
 
 # 1. Project Folder Name
-read -p "Enter project folder name (created in $HOME/) [default: myapp]: " input_folder_name
+read -p "Enter project folder name (created in $HOME/) [default: smartduuka]: " input_folder_name
 FOLDER_NAME="${input_folder_name:-smartduuka}"
 PROJECT_DIR="$HOME/$FOLDER_NAME"
 
@@ -28,10 +28,7 @@ BACKEND_REPO="${BACKEND_REPO#https://github.com/}"
 BACKEND_REPO="${BACKEND_REPO%.git}"
 BACKEND_USER="${BACKEND_REPO%/*}"
 
-# 4. CI/CD Auto Deploy Key (Optional)
-read -p "Paste public key for GitHub Actions Auto-Deploy (Press Enter to skip): " CI_CD_KEY
-
-# 5. Swap Size & Network
+# 4. Swap Size & Network
 read -p "Enter Swap Size [default: 1G]: " input_swap_size
 SWAP_SIZE="${input_swap_size:-1G}"
 read -p "Enter Docker Network Name [default: smartduuka_network]: " input_network
@@ -56,6 +53,18 @@ echo ""
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 
+# Safely append a block to a file only if an anchor string is not already present.
+# Usage: append_if_missing "anchor_string" "content_to_append" "/path/to/file"
+append_if_missing() {
+  local anchor="$1"
+  local content="$2"
+  local file="$3"
+  touch "$file"
+  if ! grep -qF "$anchor" "$file"; then
+    printf '%s\n' "$content" >> "$file"
+  fi
+}
+
 setup_ssh_key() {
   local gh_user=$1
   local key_path="$HOME/.ssh/id_ed25519_$gh_user"
@@ -72,8 +81,8 @@ setup_ssh_key() {
   fi
 
   local ssh_config="$HOME/.ssh/config"
-  touch "$ssh_config"
-  if ! grep -q "Host $host_alias" "$ssh_config"; then
+  # Only append the Host block if the alias doesn't already exist
+  if ! grep -qF "Host $host_alias" "$ssh_config" 2>/dev/null; then
     log "📝 Adding SSH config alias for $host_alias..."
     cat <<EOF >> "$ssh_config"
 
@@ -84,21 +93,35 @@ Host $host_alias
     IdentityFile $key_path
     IdentitiesOnly yes
 EOF
+  else
+    log "✅ SSH config alias for $host_alias already exists."
   fi
 }
 
 setup_ssh_key "$WEB_USER"
 setup_ssh_key "$BACKEND_USER"
 
-# Handle Optional CI/CD Auth Key
-if [ -n "$CI_CD_KEY" ]; then
-  log "🔐 Adding CI/CD Auto-Deploy Key to authorized_keys..."
-  echo "$CI_CD_KEY" >> "$HOME/.ssh/authorized_keys"
-  chmod 600 "$HOME/.ssh/authorized_keys"
+# ----------------------------
+# 2. AUTO-GENERATE CI/CD DEPLOY KEY
+# ----------------------------
+CICD_KEY_PATH="$HOME/.ssh/id_ed25519_cicd_deploy"
+
+if [ ! -f "$CICD_KEY_PATH" ]; then
+  log "🔐 Generating CI/CD Auto-Deploy keypair..."
+  ssh-keygen -t ed25519 -C "cicd-auto-deploy" -f "$CICD_KEY_PATH" -N ""
+else
+  log "✅ CI/CD deploy key already exists."
 fi
 
+# Add the private key to authorized_keys (idempotent — no duplicates)
+CICD_PUB_KEY=$(cat "${CICD_KEY_PATH}.pub")
+AUTH_KEYS="$HOME/.ssh/authorized_keys"
+touch "$AUTH_KEYS"
+chmod 600 "$AUTH_KEYS"
+append_if_missing "$CICD_PUB_KEY" "$CICD_PUB_KEY" "$AUTH_KEYS"
+
 # ----------------------------
-# 2. PAUSE FOR GITHUB SETUP
+# 3. PAUSE FOR GITHUB SETUP
 # ----------------------------
 echo ""
 echo "================================================================="
@@ -118,10 +141,22 @@ if [ "$WEB_USER" != "$BACKEND_USER" ]; then
   echo ""
 fi
 
+echo "================================================================="
+echo "🤖 CI/CD AUTO-DEPLOY PUBLIC KEY (add to GitHub Actions secrets"
+echo "   as SSH_PRIVATE_KEY, and add the public key below as a Deploy"
+echo "   Key with write access, or to your account SSH keys):"
+echo "================================================================="
+cat "${CICD_KEY_PATH}.pub"
+echo ""
+echo "The private key for CI/CD is stored at: ${CICD_KEY_PATH}"
+echo "Copy it to your GitHub Actions secret SSH_PRIVATE_KEY with:"
+echo "  cat ${CICD_KEY_PATH}"
+echo ""
+
 read -p "Press [Enter] ONLY AFTER you have added these keys to GitHub..."
 
 # ----------------------------
-# 3. VERIFY SSH CONNECTIONS
+# 4. VERIFY SSH CONNECTIONS
 # ----------------------------
 log "🧪 Verifying GitHub SSH Connections..."
 # set +e is needed here because ssh -T to github always exits with code 1, which trips pipefail
@@ -157,7 +192,8 @@ else
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
   sudo swapon /swapfile
-  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  # Only add fstab entry if not already present
+  append_if_missing "/swapfile none swap" "/swapfile none swap sw 0 0" /etc/fstab
 fi
 
 # ----------------------------
@@ -171,6 +207,8 @@ if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
     sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
   sudo apt-get update
+else
+  log "✅ Docker repository already configured."
 fi
 
 # ----------------------------
@@ -179,6 +217,8 @@ fi
 if ! command -v docker &> /dev/null; then
   log "🐳 Installing Docker Engine..."
   sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+else
+  log "✅ Docker already installed."
 fi
 
 sudo systemctl enable docker --now
@@ -190,6 +230,8 @@ if ! docker buildx version &> /dev/null; then
   log "📦 Installing Docker Buildx plugin..."
   sudo apt-get update
   sudo apt-get install -y docker-buildx-plugin
+else
+  log "✅ Docker Buildx already installed."
 fi
 
 # ----------------------------
@@ -197,10 +239,20 @@ fi
 # ----------------------------
 log "🐳 Fetching the absolute latest Docker Compose V2..."
 COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-sudo mkdir -p /usr/local/lib/docker/cli-plugins
-sudo curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-$(uname -m)" -o /usr/local/lib/docker/cli-plugins/docker-compose
-sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-log "✅ Docker Compose dynamically updated to ${COMPOSE_VERSION}"
+COMPOSE_DEST="/usr/local/lib/docker/cli-plugins/docker-compose"
+INSTALLED_VERSION=""
+if [ -f "$COMPOSE_DEST" ]; then
+  INSTALLED_VERSION=$(docker compose version --short 2>/dev/null || true)
+fi
+
+if [ "$INSTALLED_VERSION" != "${COMPOSE_VERSION#v}" ]; then
+  sudo mkdir -p /usr/local/lib/docker/cli-plugins
+  sudo curl -SL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-$(uname -m)" -o "$COMPOSE_DEST"
+  sudo chmod +x "$COMPOSE_DEST"
+  log "✅ Docker Compose updated to ${COMPOSE_VERSION}"
+else
+  log "✅ Docker Compose already at latest version (${COMPOSE_VERSION})."
+fi
 
 # ----------------------------
 # SETUP NETWORK
@@ -208,6 +260,8 @@ log "✅ Docker Compose dynamically updated to ${COMPOSE_VERSION}"
 if ! sudo docker network ls --format '{{.Name}}' | grep -wq "$NETWORK_NAME"; then
   log "🌐 Creating network '$NETWORK_NAME'..."
   sudo docker network create "$NETWORK_NAME"
+else
+  log "✅ Docker network '$NETWORK_NAME' already exists."
 fi
 
 # ----------------------------
@@ -250,8 +304,14 @@ done
 
 log "🔗 Ensuring storage symlink..."
 cd "$BACKEND_DIR"
-rm -f public/storage
-ln -s ../storage/app/public public/storage
+# Only create symlink if it doesn't already point to the right place
+if [ ! -L public/storage ] || [ "$(readlink public/storage)" != "../storage/app/public" ]; then
+  rm -f public/storage
+  ln -s ../storage/app/public public/storage
+  log "✅ Symlink created."
+else
+  log "✅ Symlink already correct."
+fi
 cd "$PROJECT_DIR"
 
 # ----------------------------
