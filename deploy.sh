@@ -54,7 +54,6 @@ mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 
 # Safely append a block to a file only if an anchor string is not already present.
-# Usage: append_if_missing "anchor_string" "content_to_append" "/path/to/file"
 append_if_missing() {
   local anchor="$1"
   local content="$2"
@@ -70,10 +69,10 @@ setup_ssh_key() {
   local key_path="$HOME/.ssh/id_ed25519_$gh_user"
   local host_alias="github-$gh_user"
 
+  # Prevent overwriting existing keys
   if [ ! -f "$key_path" ]; then
     log "🔑 Generating SSH key for GitHub user: $gh_user..."
     ssh-keygen -t ed25519 -C "deploy-$gh_user" -f "$key_path" -N ""
-    # Ensure ssh-agent is running and add key
     eval "$(ssh-agent -s)" &>/dev/null
     ssh-add "$key_path" &>/dev/null
   else
@@ -113,7 +112,7 @@ else
   log "✅ CI/CD deploy key already exists."
 fi
 
-# Add the private key to authorized_keys (idempotent — no duplicates)
+# Add the public key to authorized_keys (idempotent — no duplicates)
 CICD_PUB_KEY=$(cat "${CICD_KEY_PATH}.pub")
 AUTH_KEYS="$HOME/.ssh/authorized_keys"
 touch "$AUTH_KEYS"
@@ -131,39 +130,47 @@ echo "#      PRESSING ENTER                                  #"
 echo "#                                                      #"
 echo "########################################################"
 echo ""
-echo "You need to add keys to GitHub in 3 separate places."
-echo "Follow each step below exactly."
+echo "You need to add keys to GitHub."
+echo "Both PUBLIC and PRIVATE keys are displayed below for your records."
 echo ""
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " PART 1 OF 3 — REPO DEPLOY KEYS (lets this server pull code from GitHub)"
+echo " PART 1 OF 3 — REPO DEPLOY KEYS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo " WHERE:  GitHub → Your Repo → Settings → Deploy Keys → Add deploy key"
-echo " ACTION: Paste the public key shown. Write access = NO (read-only is enough)."
+echo " ACTION: Paste the PUBLIC key shown. Write access = NO (read-only is enough)."
+echo " NOTE:   The PRIVATE keys are shown below just in case you need to copy"
+echo "         them to a secrets manager or external CI environment."
 echo ""
-echo " ── Web Repo public deploy key (repo: $WEB_REPO) ──"
+echo " ── Web Repo PUBLIC deploy key (repo: $WEB_REPO) ──"
 cat "$HOME/.ssh/id_ed25519_${WEB_USER}.pub"
+echo ""
+echo " ── Web Repo PRIVATE deploy key (repo: $WEB_REPO) ──"
+cat "$HOME/.ssh/id_ed25519_${WEB_USER}"
 echo ""
 
 if [ "$WEB_USER" != "$BACKEND_USER" ]; then
-  echo " ── Backend Repo public deploy key (repo: $BACKEND_REPO) ──"
+  echo " ── Backend Repo PUBLIC deploy key (repo: $BACKEND_REPO) ──"
   cat "$HOME/.ssh/id_ed25519_${BACKEND_USER}.pub"
+  echo ""
+  echo " ── Backend Repo PRIVATE deploy key (repo: $BACKEND_REPO) ──"
+  cat "$HOME/.ssh/id_ed25519_${BACKEND_USER}"
   echo ""
 fi
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " PART 2 OF 3 — CI/CD PUBLIC KEY (registers this server as a trusted SSH target)"
+echo " PART 2 OF 3 — CI/CD PUBLIC KEY (Target Server Identification)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo " NOTE:   This public key has already been added to this server's"
-echo "         authorized_keys automatically. You only need to register"
-echo "         it on GitHub so Actions knows which server it is talking to."
+echo "         authorized_keys automatically. Register it on GitHub so"
+echo "         Actions knows which server it is talking to."
 echo ""
 echo " WHERE:  GitHub → Your Account → Settings → SSH and GPG keys → New SSH key"
 echo " ACTION: Paste the public key shown below."
 echo ""
-echo " ── CI/CD public key ──"
+echo " ── CI/CD PUBLIC key ──"
 cat "${CICD_KEY_PATH}.pub"
 echo ""
 
@@ -182,7 +189,7 @@ echo ""
 echo " ── CI/CD PRIVATE KEY — PASTE THIS INTO SSH_PRIVATE_KEY SECRET ──"
 cat "${CICD_KEY_PATH}"
 echo ""
-echo " ── END OF PRIVATE KEY ──"
+echo " ── END OF CI/CD PRIVATE KEY ──"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
@@ -193,7 +200,6 @@ read -p "Press [Enter] ONLY AFTER you have completed all 3 parts above..."
 # 4. VERIFY SSH CONNECTIONS
 # ----------------------------
 log "🧪 Verifying GitHub SSH Connections..."
-# set +e is needed here because ssh -T to github always exits with code 1, which trips pipefail
 set +e
 if ssh -T "git@github-${WEB_USER}" 2>&1 | grep -q "successfully authenticated"; then
     log "✅ Web repo SSH auth successful."
@@ -206,7 +212,7 @@ if ssh -T "git@github-${BACKEND_USER}" 2>&1 | grep -q "successfully authenticate
 else
     log "⚠️ Warning: Backend repo SSH auth failed. Git clone might fail."
 fi
-set -e # Re-enable strict error handling
+set -e
 
 # ----------------------------
 # UPDATE SYSTEM & INSTALL TOOLS
@@ -226,7 +232,6 @@ else
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
   sudo swapon /swapfile
-  # Only add fstab entry if not already present
   append_if_missing "/swapfile none swap" "/swapfile none swap sw 0 0" /etc/fstab
 fi
 
@@ -338,7 +343,6 @@ done
 
 log "🔗 Ensuring storage symlink..."
 cd "$BACKEND_DIR"
-# Only create symlink if it doesn't already point to the right place
 if [ ! -L public/storage ] || [ "$(readlink public/storage)" != "../storage/app/public" ]; then
   rm -f public/storage
   ln -s ../storage/app/public public/storage
