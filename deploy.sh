@@ -48,139 +48,109 @@ log "🚀 Starting deployment to $PROJECT_DIR..."
 echo ""
 
 # ----------------------------
-# 1. SSH KEY GENERATION & CONFIG
+# 1. UNIQUE SSH KEY GENERATION
 # ----------------------------
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 
-# Safely append a block to a file only if an anchor string is not already present.
-append_if_missing() {
-  local anchor="$1"
-  local content="$2"
-  local file="$3"
-  touch "$file"
-  if ! grep -qF "$anchor" "$file"; then
-    printf '%s\n' "$content" >> "$file"
-  fi
-}
-
 setup_ssh_key() {
-  local gh_user=$1
-  local key_path="$HOME/.ssh/id_ed25519_$gh_user"
-  local host_alias="github-$gh_user"
+  local repo_full_name=$1  # e.g., omodingmike/smartduuka2
+  local repo_alias="${repo_full_name//\//_}" # Replaces / with _ for filename safety
+  local key_path="$HOME/.ssh/id_ed25519_$repo_alias"
+  local host_alias="github-$repo_alias"
 
-  # Prevent overwriting existing keys
+  # 1. Generate Key only if it doesn't exist
   if [ ! -f "$key_path" ]; then
-    log "🔑 Generating SSH key for GitHub user: $gh_user..."
-    ssh-keygen -t ed25519 -C "deploy-$gh_user" -f "$key_path" -N ""
+    log "🔑 Generating unique key for $repo_full_name..."
+    ssh-keygen -t ed25519 -C "deploy-$repo_alias" -f "$key_path" -N ""
     eval "$(ssh-agent -s)" &>/dev/null
     ssh-add "$key_path" &>/dev/null
   else
-    log "✅ SSH key for $gh_user already exists."
+    log "✅ SSH key for $repo_alias already exists. Skipping generation."
   fi
 
+  # 2. Add to SSH Config only if not already present
   local ssh_config="$HOME/.ssh/config"
-  # Only append the Host block if the alias doesn't already exist
   if ! grep -qF "Host $host_alias" "$ssh_config" 2>/dev/null; then
-    log "📝 Adding SSH config alias for $host_alias..."
+    log "📝 Adding config entry for $host_alias..."
     cat <<EOF >> "$ssh_config"
 
-# Account for $gh_user
+# Unique key for $repo_full_name
 Host $host_alias
     HostName github.com
     User git
     IdentityFile $key_path
     IdentitiesOnly yes
 EOF
-  else
-    log "✅ SSH config alias for $host_alias already exists."
   fi
 }
 
-setup_ssh_key "$WEB_USER"
-setup_ssh_key "$BACKEND_USER"
+# Generate unique pairs for both
+setup_ssh_key "$WEB_REPO"
+setup_ssh_key "$BACKEND_REPO"
 
-# ----------------------------
-# 2. AUTO-GENERATE CI/CD DEPLOY KEY
-# ----------------------------
+# Generate CI/CD key for the server
 CICD_KEY_PATH="$HOME/.ssh/id_ed25519_cicd_deploy"
-
 if [ ! -f "$CICD_KEY_PATH" ]; then
-  log "🔐 Generating CI/CD Auto-Deploy keypair..."
   ssh-keygen -t ed25519 -C "cicd-auto-deploy" -f "$CICD_KEY_PATH" -N ""
-else
-  log "✅ CI/CD deploy key already exists."
 fi
 
-# Add the public key to authorized_keys (idempotent — no duplicates)
-CICD_PUB_KEY=$(cat "${CICD_KEY_PATH}.pub")
-AUTH_KEYS="$HOME/.ssh/authorized_keys"
-touch "$AUTH_KEYS"
-chmod 600 "$AUTH_KEYS"
-append_if_missing "$CICD_PUB_KEY" "$CICD_PUB_KEY" "$AUTH_KEYS"
-
 # ----------------------------
-# 3. PAUSE FOR GITHUB SETUP (KEY DISPLAY)
+# 3. SEPARATE KEY DISPLAY & NOTES
 # ----------------------------
 echo ""
 echo "================================================================="
 echo "                 GITHUB SETUP INSTRUCTIONS                       "
 echo "================================================================="
-echo "Please add the following keys to GitHub. Both PUBLIC and PRIVATE "
-echo "keys are displayed below for your records."
+echo "Each repository requires a UNIQUE Deploy Key to avoid the "
+echo "'Key is already in use' error."
 echo ""
 
+# WEB REPO
+WEB_ALIAS="${WEB_REPO//\//_}"
 echo "-----------------------------------------------------------------"
 echo " 1. WEB REPOSITORY KEYS (Repo: $WEB_REPO)"
 echo "-----------------------------------------------------------------"
-echo " NOTES ON HOW TO ADD:"
-echo " • PUBLIC KEY: Go to GitHub -> $WEB_REPO -> Settings -> Deploy Keys -> Add deploy key."
-echo "   (Paste the PUBLIC key below. Read-only access is sufficient)."
-echo " • PRIVATE KEY: Use this in your CI/CD secrets if your pipeline needs"
-echo "   to pull this specific repository directly."
+echo " NOTES: Go to GitHub -> $WEB_REPO -> Settings -> Deploy Keys -> Add."
 echo ""
-echo " 👇 [ WEB REPO - PUBLIC KEY ] 👇"
-cat "$HOME/.ssh/id_ed25519_${WEB_USER}.pub"
+echo " 👇 [ WEB - PUBLIC KEY ] 👇"
+cat "$HOME/.ssh/id_ed25519_${WEB_ALIAS}.pub"
 echo ""
-echo " 👇 [ WEB REPO - PRIVATE KEY ] 👇"
-cat "$HOME/.ssh/id_ed25519_${WEB_USER}"
+echo " 👇 [ WEB - PRIVATE KEY ] 👇"
+cat "$HOME/.ssh/id_ed25519_${WEB_ALIAS}"
 echo ""
 
+# BACKEND REPO
+BACKEND_ALIAS="${BACKEND_REPO//\//_}"
 echo "-----------------------------------------------------------------"
 echo " 2. BACKEND REPOSITORY KEYS (Repo: $BACKEND_REPO)"
 echo "-----------------------------------------------------------------"
-echo " NOTES ON HOW TO ADD:"
-echo " • PUBLIC KEY: Go to GitHub -> $BACKEND_REPO -> Settings -> Deploy Keys -> Add deploy key."
-echo "   (Paste the PUBLIC key below. Read-only access is sufficient)."
-echo " • PRIVATE KEY: Use this in your CI/CD secrets if your pipeline needs"
-echo "   to pull this specific repository directly."
+echo " NOTES: Go to GitHub -> $BACKEND_REPO -> Settings -> Deploy Keys -> Add."
+echo " (This key is unique and will not conflict with the Web key)."
 echo ""
-echo " 👇 [ BACKEND REPO - PUBLIC KEY ] 👇"
-cat "$HOME/.ssh/id_ed25519_${BACKEND_USER}.pub"
+echo " 👇 [ BACKEND - PUBLIC KEY ] 👇"
+cat "$HOME/.ssh/id_ed25519_${BACKEND_ALIAS}.pub"
 echo ""
-echo " 👇 [ BACKEND REPO - PRIVATE KEY ] 👇"
-cat "$HOME/.ssh/id_ed25519_${BACKEND_USER}"
+echo " 👇 [ BACKEND - PRIVATE KEY ] 👇"
+cat "$HOME/.ssh/id_ed25519_${BACKEND_ALIAS}"
 echo ""
 
+# GITHUB ACCOUNT
 echo "-----------------------------------------------------------------"
-echo " 3. GITHUB ACCOUNT PUBLIC KEY (Target Server Identification)"
+echo " 3. GITHUB ACCOUNT PUBLIC KEY (Server-wide Access)"
 echo "-----------------------------------------------------------------"
-echo " NOTES ON HOW TO ADD:"
-echo " • PUBLIC KEY: Go to GitHub -> Click your Profile Picture (Top Right) -> Settings"
-echo "   -> SSH and GPG keys -> New SSH key."
-echo "   (This registers your server as a trusted machine on your overall GitHub account)."
+echo " NOTES: Go to GitHub User Settings -> SSH and GPG keys -> New SSH key."
 echo ""
 echo " 👇 [ GITHUB ACCOUNT - PUBLIC KEY ] 👇"
 cat "${CICD_KEY_PATH}.pub"
 echo ""
 
+# CI/CD SECRET
 echo "-----------------------------------------------------------------"
-echo " 4. CI/CD PRIVATE KEY (For GitHub Actions SSH)"
+echo " 4. CI/CD PRIVATE KEY (GitHub Actions Secret)"
 echo "-----------------------------------------------------------------"
-echo " NOTES ON HOW TO ADD:"
-echo " • PRIVATE KEY: Go to GitHub -> Your Repo -> Settings -> Secrets and variables"
-echo "   -> Actions -> New repository secret. Name it 'SSH_PRIVATE_KEY'."
-echo "   (GitHub Actions uses this to securely log into this server and trigger deployments)."
+echo " NOTES: In your repo Settings -> Secrets -> Actions -> New Secret."
+echo " Name it 'SSH_PRIVATE_KEY'."
 echo ""
 echo " 👇 [ CI/CD - PRIVATE KEY ] 👇"
 cat "${CICD_KEY_PATH}"
@@ -188,23 +158,19 @@ echo ""
 echo "================================================================="
 echo ""
 
-read -p "Press [Enter] ONLY AFTER you have securely copied all the keys above..."
+read -p "Press [Enter] once all keys are added to GitHub..."
 
 # ----------------------------
 # 4. VERIFY SSH CONNECTIONS
 # ----------------------------
 log "🧪 Verifying GitHub SSH Connections..."
 set +e
-if ssh -T "git@github-${WEB_USER}" 2>&1 | grep -q "successfully authenticated"; then
+if ssh -T "git@github-${WEB_ALIAS}" 2>&1 | grep -q "successfully authenticated"; then
     log "✅ Web repo SSH auth successful."
-else
-    log "⚠️ Warning: Web repo SSH auth failed. Git clone might fail."
 fi
 
-if ssh -T "git@github-${BACKEND_USER}" 2>&1 | grep -q "successfully authenticated"; then
+if ssh -T "git@github-${BACKEND_ALIAS}" 2>&1 | grep -q "successfully authenticated"; then
     log "✅ Backend repo SSH auth successful."
-else
-    log "⚠️ Warning: Backend repo SSH auth failed. Git clone might fail."
 fi
 set -e
 
