@@ -191,12 +191,18 @@ sudo docker network ls --format '{{.Name}}' | grep -wq "$NETWORK_NAME" || sudo d
 
 mkdir -p "$PROJECT_DIR"
 clone_or_pull() {
-  if [ ! -d "$2/.git" ]; then
-    log "📥 Cloning $1..."
-    git clone "$1" "$2"
+  local repo_url=$1
+  local target_dir=$2
+
+  if [ ! -d "$target_dir/.git" ]; then
+    log "📥 Cloning $repo_url..."
+    git clone "$repo_url" "$target_dir"
   else
-    log "🔄 Updating $2..."
-    cd "$2" && git pull
+    log "🔄 Updating $target_dir..."
+    cd "$target_dir"
+    # Force the remote URL to match the SSH alias before pulling
+    git remote set-url origin "$repo_url"
+    git pull
   fi
 }
 
