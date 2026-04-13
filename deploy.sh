@@ -25,19 +25,19 @@ append_if_missing() {
 # ----------------------------
 
 # 1. Project Folder Name
-read -p "Enter project folder name (created in $HOME/) [default: smartduuka]: " input_folder_name
+read -p "Enter project folder name (created in $HOME/) [default: myapp]: " input_folder_name
 FOLDER_NAME="${input_folder_name:-smartduuka}"
 PROJECT_DIR="$HOME/$FOLDER_NAME"
 
 # 2. Web Repository
-read -p "Enter Web GitHub Repo (username/repo) [default: kimdigitary/smartduukanewfront]: " input_web_repo
+read -p "Enter Web GitHub Repo (username/repo): " input_web_repo
 WEB_REPO="${input_web_repo:-kimdigitary/smartduukanewfront}"
 WEB_REPO="${WEB_REPO#https://github.com/}"
 WEB_REPO="${WEB_REPO%.git}"
 WEB_USER="${WEB_REPO%/*}"
 
 # 3. Backend Repository
-read -p "Enter Backend GitHub Repo (username/repo) [default: omodingmike/smartduuka2]: " input_backend_repo
+read -p "Enter Backend GitHub Repo (username/repo): " input_backend_repo
 BACKEND_REPO="${input_backend_repo:-omodingmike/smartduuka2}"
 BACKEND_REPO="${BACKEND_REPO#https://github.com/}"
 BACKEND_REPO="${BACKEND_REPO%.git}"
@@ -46,12 +46,20 @@ BACKEND_USER="${BACKEND_REPO%/*}"
 # 4. Swap Size & Network
 read -p "Enter Swap Size [default: 1G]: " input_swap_size
 SWAP_SIZE="${input_swap_size:-1G}"
-read -p "Enter Docker Network Name [default: smartduuka_network]: " input_network
+read -p "Enter Docker Network Name: " input_network
 NETWORK_NAME="${input_network:-smartduuka_network}"
 
-# Derived variables
-WEB_REPO_URL="git@github-${WEB_USER}:${WEB_REPO}.git"
-BACKEND_REPO_URL="git@github-${BACKEND_USER}:${BACKEND_REPO}.git"
+# ----------------------------
+# DERIVED VARIABLES & FIX
+# ----------------------------
+# Generate the exact aliases used in ~/.ssh/config
+WEB_ALIAS="${WEB_REPO//\//_}"
+BACKEND_ALIAS="${BACKEND_REPO//\//_}"
+
+# Use those specific aliases for the Git URLs
+WEB_REPO_URL="git@github-${WEB_ALIAS}:${WEB_REPO}.git"
+BACKEND_REPO_URL="git@github-${BACKEND_ALIAS}:${BACKEND_REPO}.git"
+
 WEB_DIR="$PROJECT_DIR/web"
 BACKEND_DIR="$PROJECT_DIR/api"
 
@@ -117,9 +125,6 @@ fi
 # ----------------------------
 # 3. SEPARATE KEY DISPLAY & NOTES
 # ----------------------------
-WEB_ALIAS="${WEB_REPO//\//_}"
-BACKEND_ALIAS="${BACKEND_REPO//\//_}"
-
 echo ""
 echo "================================================================="
 echo "                 GITHUB SETUP INSTRUCTIONS                       "
