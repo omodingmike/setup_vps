@@ -48,9 +48,10 @@ curl -o ~/deploy.sh https://raw.githubusercontent.com/omodingmike/setup_vps/main
 If you need to deploy additional applications or services alongside your main deployment on the same server, use the add repository script:
 
 ```bash
-curl -o ~/add_repo.sh [https://raw.githubusercontent.com/omodingmike/setup_vps/main/add_repo.sh](https://raw.githubusercontent.com/omodingmike/setup_vps/main/add_repo.sh) \
+curl -o ~/add_repo.sh https://raw.githubusercontent.com/omodingmike/setup_vps/main/add_repo.sh \
 && chmod +x ~/add_repo.sh \
 && ./add_repo.sh
+```
 
 
 ### What this script does
