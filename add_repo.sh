@@ -31,7 +31,7 @@ REPO="${input_repo#https://github.com/}"
 REPO="${REPO%.git}"
 
 # 3. Docker Network
-read -p "Enter Docker Network Name [default: my_network]: " input_network
+read -p "Enter Docker Network Name [default: smartduuka_network]: " input_network
 NETWORK_NAME="${input_network:-smartduuka_network}"
 
 # ----------------------------
@@ -39,6 +39,7 @@ NETWORK_NAME="${input_network:-smartduuka_network}"
 # ----------------------------
 REPO_ALIAS="${REPO//\//_}"
 REPO_URL="git@github-${REPO_ALIAS}:${REPO}.git"
+CICD_KEY_PATH="$HOME/.ssh/id_ed25519_cicd_deploy"
 
 echo ""
 log "🚀 Setting up $REPO at $TARGET_DIR..."
@@ -80,14 +81,29 @@ echo ""
 echo "================================================================="
 echo "                 GITHUB SETUP INSTRUCTIONS                       "
 echo "================================================================="
-echo " 1. Go to your repository: https://github.com/$REPO/settings/keys"
-echo " 2. Click 'Add deploy key'"
-echo " 3. Give it a title (e.g., 'VPS Deploy Key') and paste this exact key:"
+echo " STEP 1: REPOSITORY ACCESS (READ ONLY)"
+echo " -> Go to: https://github.com/$REPO/settings/keys"
+echo " -> Click 'Add deploy key'"
+echo " -> Paste this exact PUBLIC key:"
 echo "-----------------------------------------------------------------"
 cat "${KEY_PATH}.pub"
 echo "-----------------------------------------------------------------"
 echo ""
-read -p "Press [Enter] once the key has been added to GitHub..."
+echo " STEP 2: CI/CD AUTOMATION (GITHUB ACTIONS)"
+echo " -> Go to: https://github.com/$REPO/settings/secrets/actions"
+echo " -> Click 'New repository secret'"
+echo " -> Name it 'DEPLOY_KEY' and paste this exact PRIVATE key:"
+echo "-----------------------------------------------------------------"
+if [ -f "$CICD_KEY_PATH" ]; then
+    cat "$CICD_KEY_PATH"
+else
+    echo "⚠️  WARNING: CI/CD Private Key not found at $CICD_KEY_PATH"
+    echo "   Did you run the main deploy.sh script first?"
+fi
+echo "-----------------------------------------------------------------"
+echo "================================================================="
+echo ""
+read -p "Press [Enter] once BOTH keys have been added to GitHub..."
 echo ""
 
 # ----------------------------
