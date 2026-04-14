@@ -51,7 +51,7 @@ If you need to deploy additional applications or services alongside your main de
 curl -o ~/add_repo.sh [https://raw.githubusercontent.com/omodingmike/setup_vps/main/add_repo.sh](https://raw.githubusercontent.com/omodingmike/setup_vps/main/add_repo.sh) \
 && chmod +x ~/add_repo.sh \
 && ./add_repo.sh
-```
+
 
 ### What this script does
 
