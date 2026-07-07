@@ -1,18 +1,32 @@
 #!/bin/bash
+set -Eeuo pipefail
 
 echo "========================================="
 echo "       Hardened VPS Setup Script         "
 echo "========================================="
+
+if [ "$EUID" -ne 0 ]; then
+  echo "Error: setup.sh must be run as root. Use sudo or log in as root."
+  exit 1
+fi
 
 # --- INTERACTIVE PROMPTS ---
 
 # 1. Prompt for User (with default)
 read -p "Enter the new username [default: deploy]: " input_user
 NEW_USER="${input_user:-deploy}"
+if ! [[ "$NEW_USER" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
+  echo "Error: Invalid Linux username: $NEW_USER"
+  exit 1
+fi
 
 # 2. Prompt for Port (with default)
 read -p "Enter custom SSH port [default: 7589]: " input_port
 CUSTOM_SSH_PORT="${input_port:-7589}"
+if ! [[ "$CUSTOM_SSH_PORT" =~ ^[0-9]+$ ]] || [ "$CUSTOM_SSH_PORT" -lt 1 ] || [ "$CUSTOM_SSH_PORT" -gt 65535 ]; then
+  echo "Error: SSH port must be a number from 1 to 65535."
+  exit 1
+fi
 
 # 3. Prompt for SSH Key (Required)
 while true; do
@@ -48,16 +62,20 @@ else
 fi
 
 # 3. Setup SSH (Check if key already present)
-mkdir -p /home/"$NEW_USER"/.ssh
-if grep -q "$SSH_PUBLIC_KEY" /home/"$NEW_USER"/.ssh/authorized_keys 2>/dev/null; then
+USER_HOME="/home/$NEW_USER"
+USER_SSH_DIR="$USER_HOME/.ssh"
+AUTHORIZED_KEYS="$USER_SSH_DIR/authorized_keys"
+mkdir -p "$USER_SSH_DIR"
+touch "$AUTHORIZED_KEYS"
+if grep -qxF "$SSH_PUBLIC_KEY" "$AUTHORIZED_KEYS"; then
   echo "SSH Public Key already authorized for $NEW_USER."
 else
-  echo "$SSH_PUBLIC_KEY" >> /home/"$NEW_USER"/.ssh/authorized_keys
+  printf '%s\n' "$SSH_PUBLIC_KEY" >> "$AUTHORIZED_KEYS"
   echo "SSH Public Key added."
 fi
-chown -R "$NEW_USER":"$NEW_USER" /home/"$NEW_USER"/.ssh
-chmod 700 /home/"$NEW_USER"/.ssh
-chmod 600 /home/"$NEW_USER"/.ssh/authorized_keys
+chown -R "$NEW_USER":"$NEW_USER" "$USER_SSH_DIR"
+chmod 700 "$USER_SSH_DIR"
+chmod 600 "$AUTHORIZED_KEYS"
 
 # 4. Docker Installation - Fetching LATEST from Official Repo
 if command -v docker &> /dev/null; then
@@ -94,46 +112,60 @@ fi
 
 # 6. Harden SSH Configuration
 echo "Applying SSH hardening..."
-sed -i "s/^#*Port.*/Port $CUSTOM_SSH_PORT/" /etc/ssh/sshd_config
-sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+set_sshd_option() {
+  local key="$1"
+  local value="$2"
+  local file="/etc/ssh/sshd_config"
+
+  if grep -qE "^[#[:space:]]*${key}[[:space:]]+" "$file"; then
+    sed -i -E "s|^[#[:space:]]*${key}[[:space:]].*|${key} ${value}|" "$file"
+  else
+    printf '%s %s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+set_sshd_option Port "$CUSTOM_SSH_PORT"
+set_sshd_option PermitRootLogin no
+set_sshd_option PasswordAuthentication no
+set_sshd_option PubkeyAuthentication yes
 
 # Disable Password Authentication in drop-in files to prevent cloud-init overrides
+mkdir -p /etc/ssh/sshd_config.d
 echo "PasswordAuthentication no" > /etc/ssh/sshd_config.d/60-custom-disable-pass.conf
 
 # 7. Firewall (UFW)
+if ! command -v ufw &>/dev/null; then
+  apt install ufw -y
+fi
+echo "Configuring Firewall..."
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow "$CUSTOM_SSH_PORT"/tcp
+ufw allow http
+ufw allow https
 if ufw status | grep -q "active"; then
   echo "Firewall is already active."
 else
-  echo "Configuring Firewall..."
-  apt install ufw -y
-  ufw default deny incoming
-  ufw default allow outgoing
-  ufw allow "$CUSTOM_SSH_PORT"/tcp
-  ufw allow http
-  ufw allow https
   echo "y" | ufw enable
 fi
 
 # 8. Fail2Ban (Installs latest available in OS repo)
-if [ -f /etc/fail2ban/jail.local ]; then
-  echo "Fail2Ban configuration already exists."
-else
-  echo "Configuring Fail2Ban..."
+if ! command -v fail2ban-server &>/dev/null; then
   apt install fail2ban -y
-  cat <<EOM > /etc/fail2ban/jail.local
+fi
+echo "Configuring Fail2Ban..."
+cat <<EOM > /etc/fail2ban/jail.local
 [sshd]
 enabled = true
 port = $CUSTOM_SSH_PORT
 maxretry = 5
 bantime = 1h
 EOM
-  systemctl restart fail2ban
-fi
+systemctl enable --now fail2ban
+systemctl restart fail2ban
 
 # 9. Final Cleanup & Restart
-systemctl restart ssh
+systemctl restart ssh || systemctl restart sshd
 
 echo "-------------------------------------------------------"
 echo "Setup Complete & Verified!"

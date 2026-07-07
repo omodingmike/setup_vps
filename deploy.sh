@@ -11,6 +11,10 @@ echo "========================================="
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 fail() { echo "❌ $*" >&2; exit 1; }
 
+if [ "$EUID" -eq 0 ]; then
+  fail "Do not run this script as root. Log in as your deploy user first, then run: ./deploy.sh"
+fi
+
 append_if_missing() {
   local search_string="$1"
   local append_string="$2"
@@ -33,14 +37,26 @@ PROJECT_DIR="$HOME/$FOLDER_NAME"
 read -p "Enter Web GitHub Repo (username/repo): " input_web_repo
 WEB_REPO="${input_web_repo:-kimdigitary/smartduukanewfront}"
 WEB_REPO="${WEB_REPO#https://github.com/}"
+WEB_REPO="${WEB_REPO#http://github.com/}"
+WEB_REPO="${WEB_REPO#git@github.com:}"
 WEB_REPO="${WEB_REPO%.git}"
+WEB_REPO="${WEB_REPO%/}"
+if [[ "$WEB_REPO" != */* || "$WEB_REPO" == *" "* ]]; then
+  fail "Web repo must be in owner/repo format."
+fi
 WEB_USER="${WEB_REPO%/*}"
 
 # 3. Backend Repository
 read -p "Enter Backend GitHub Repo (username/repo): " input_backend_repo
 BACKEND_REPO="${input_backend_repo:-omodingmike/smartduuka2}"
 BACKEND_REPO="${BACKEND_REPO#https://github.com/}"
+BACKEND_REPO="${BACKEND_REPO#http://github.com/}"
+BACKEND_REPO="${BACKEND_REPO#git@github.com:}"
 BACKEND_REPO="${BACKEND_REPO%.git}"
+BACKEND_REPO="${BACKEND_REPO%/}"
+if [[ "$BACKEND_REPO" != */* || "$BACKEND_REPO" == *" "* ]]; then
+  fail "Backend repo must be in owner/repo format."
+fi
 BACKEND_USER="${BACKEND_REPO%/*}"
 
 # 4. Swap Size & Network
@@ -53,6 +69,7 @@ NETWORK_NAME="${input_network:-smartduuka_network}"
 # DERIVED VARIABLES & FIX
 # ----------------------------
 # Generate the exact aliases used in ~/.ssh/config
+SSH_DIR="$HOME/.ssh"
 WEB_ALIAS="${WEB_REPO//\//_}"
 BACKEND_ALIAS="${BACKEND_REPO//\//_}"
 
@@ -70,13 +87,13 @@ echo ""
 # ----------------------------
 # 1. UNIQUE SSH KEY GENERATION (VPS -> GITHUB)
 # ----------------------------
-mkdir -p "$HOME/.ssh"
-chmod 700 "$HOME/.ssh"
+mkdir -p "$SSH_DIR"
+chmod 700 "$SSH_DIR"
 
 setup_ssh_key() {
   local repo_full_name=$1
   local repo_alias="${repo_full_name//\//_}"
-  local key_path="$HOME/.ssh/id_ed25519_$repo_alias"
+  local key_path="$SSH_DIR/id_ed25519_$repo_alias"
   local host_alias="github-$repo_alias"
 
   if [ ! -f "$key_path" ]; then
@@ -87,8 +104,10 @@ setup_ssh_key() {
   else
     log "✅ SSH key for $repo_alias already exists."
   fi
+  chmod 600 "$key_path"
+  chmod 644 "${key_path}.pub"
 
-  local ssh_config="$HOME/.ssh/config"
+  local ssh_config="$SSH_DIR/config"
   if ! grep -qF "Host $host_alias" "$ssh_config" 2>/dev/null; then
     log "📝 Adding config entry for $host_alias..."
     cat <<EOF >> "$ssh_config"
@@ -100,6 +119,7 @@ Host $host_alias
     IdentitiesOnly yes
 EOF
   fi
+  chmod 600 "$ssh_config"
 }
 
 setup_ssh_key "$WEB_REPO"
@@ -108,18 +128,26 @@ setup_ssh_key "$BACKEND_REPO"
 # ----------------------------
 # 2. CI/CD KEY GENERATION (GITHUB -> VPS)
 # ----------------------------
-CICD_KEY_PATH="$HOME/.ssh/id_ed25519_cicd_deploy"
+CICD_KEY_PATH="$SSH_DIR/id_ed25519_cicd_deploy"
 if [ ! -f "$CICD_KEY_PATH" ]; then
   log "🔑 Generating CI/CD key for GitHub Actions..."
   ssh-keygen -t ed25519 -C "cicd-auto-deploy" -f "$CICD_KEY_PATH" -N ""
+else
+  log "✅ CI/CD key already exists."
 fi
+chmod 600 "$CICD_KEY_PATH"
+chmod 644 "${CICD_KEY_PATH}.pub"
 
 # IMPORTANT: Authorize the CI/CD key so GitHub Actions can actually log in
-touch "$HOME/.ssh/authorized_keys"
-chmod 600 "$HOME/.ssh/authorized_keys"
-if ! grep -qF "$(cat "${CICD_KEY_PATH}.pub")" "$HOME/.ssh/authorized_keys"; then
+AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+touch "$AUTHORIZED_KEYS"
+chmod 600 "$AUTHORIZED_KEYS"
+CICD_PUBLIC_KEY="$(cat "${CICD_KEY_PATH}.pub")"
+if ! grep -qxF "$CICD_PUBLIC_KEY" "$AUTHORIZED_KEYS"; then
   log "🔐 Authorizing CI/CD key in authorized_keys..."
-  cat "${CICD_KEY_PATH}.pub" >> "$HOME/.ssh/authorized_keys"
+  printf '%s\n' "$CICD_PUBLIC_KEY" >> "$AUTHORIZED_KEYS"
+else
+  log "✅ CI/CD key is already authorized for SSH login."
 fi
 
 # ----------------------------
@@ -151,7 +179,12 @@ read -p "Press [Enter] once all keys are added to GitHub..."
 # 4. VERIFY SSH CONNECTIONS
 # ----------------------------
 log "🧪 Verifying GitHub SSH Connections..."
-ssh-keyscan -H github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
+KNOWN_HOSTS="$SSH_DIR/known_hosts"
+touch "$KNOWN_HOSTS"
+if ! ssh-keygen -F github.com -f "$KNOWN_HOSTS" >/dev/null 2>&1; then
+  ssh-keyscan -H github.com >> "$KNOWN_HOSTS" 2>/dev/null
+fi
+chmod 644 "$KNOWN_HOSTS"
 set +e
 ssh -T "git@github-${WEB_ALIAS}" 2>&1 | grep -q "successfully authenticated" && log "✅ Web repo SSH auth successful."
 ssh -T "git@github-${BACKEND_ALIAS}" 2>&1 | grep -q "successfully authenticated" && log "✅ Backend repo SSH auth successful."
@@ -180,10 +213,11 @@ fi
 # ----------------------------
 if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
   log "🔑 Adding official Docker repository..."
+  . /etc/os-release
   sudo install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+  curl -fsSL "https://download.docker.com/linux/${ID}/gpg" | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
   sudo chmod a+r /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${ID} $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
   sudo apt-get update
 fi
 
