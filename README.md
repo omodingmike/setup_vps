@@ -53,6 +53,18 @@ curl -o ~/add_repo.sh https://raw.githubusercontent.com/omodingmike/setup_vps/ma
 && ./add_repo.sh
 ```
 
+## 👤 Optional: Create Another Sudo User
+
+Run this script as `root` when you only need to create a Linux user with sudo privileges and SSH key login:
+
+```bash
+curl -o ~/create_user.sh https://raw.githubusercontent.com/omodingmike/setup_vps/main/create_user.sh \
+&& chmod +x ~/create_user.sh \
+&& ./create_user.sh
+```
+
+The script prompts for a username, defaults to `deploy`, asks for an SSH public key, and locks password login for that user.
+
 
 ### What this script does
 
