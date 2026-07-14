@@ -174,21 +174,50 @@ else
   echo "y" | ufw enable
 fi
 
-# 8. Fail2Ban (Installs latest available in OS repo)
-if ! command -v fail2ban-server &>/dev/null; then
-  # fail2ban lives in the "universe" component on Ubuntu; enable it if missing.
-  if ! command -v add-apt-repository &>/dev/null; then
-    apt install software-properties-common -y || true
+# 8. Fail2Ban (best-effort - never abort the whole hardening run if unavailable)
+fail2ban_diagnostics() {
+  echo "WARNING: fail2ban could not be installed from apt. Diagnostics:"
+  echo "  OS: $(grep -E '^PRETTY_NAME=' /etc/os-release | cut -d= -f2- | tr -d '\"')"
+  echo "  apt-cache policy fail2ban:"
+  apt-cache policy fail2ban 2>&1 | sed 's/^/    /' || true
+  echo "  Enabled apt sources/components:"
+  grep -rhE '^(deb |Suites:|Components:|Types:|URIs:)' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | sed 's/^/    /' || true
+}
+
+install_fail2ban() {
+  command -v fail2ban-server &>/dev/null && return 0
+
+  # On Ubuntu, fail2ban lives in the "universe" component; enable it if missing.
+  # (Debian ships it in "main", so this is a no-op / harmless there.)
+  if grep -qiE '(^|_)ubuntu' /etc/os-release 2>/dev/null; then
+    if ! command -v add-apt-repository &>/dev/null; then
+      apt install -y software-properties-common || true
+    fi
+    if command -v add-apt-repository &>/dev/null; then
+      add-apt-repository -y universe || true
+    fi
   fi
-  if command -v add-apt-repository &>/dev/null; then
-    add-apt-repository -y universe || true
+
+  # Refresh the index, then try the install.
+  apt update || true
+  local candidate
+  candidate="$(apt-cache policy fail2ban 2>/dev/null | awk '/Candidate:/ {print $2; exit}')"
+  if [ -z "$candidate" ] || [ "$candidate" = "(none)" ]; then
+    fail2ban_diagnostics
+    return 1
   fi
-  # Refresh the package index so the package can be located.
-  apt update
-  apt install fail2ban -y
-fi
-echo "Configuring Fail2Ban..."
-cat <<EOM > /etc/fail2ban/jail.local
+
+  if apt install -y fail2ban; then
+    return 0
+  fi
+
+  fail2ban_diagnostics
+  return 1
+}
+
+if install_fail2ban; then
+  echo "Configuring Fail2Ban..."
+  cat <<EOM > /etc/fail2ban/jail.local
 [DEFAULT]
 backend = systemd
 # Never lock out localhost. Add your own static IP here to whitelist it.
@@ -210,8 +239,13 @@ bantime = 1w
 findtime = 1d
 maxretry = 5
 EOM
-systemctl enable --now fail2ban
-systemctl restart fail2ban
+  systemctl enable --now fail2ban
+  systemctl restart fail2ban
+else
+  echo "WARNING: Skipping Fail2Ban setup. SSH is still protected by key-only auth,"
+  echo "         UFW rate-limiting, and MaxAuthTries. You can install it later with:"
+  echo "         sudo apt update && sudo apt install fail2ban"
+fi
 
 # 9. Kernel & Network Hardening (sysctl)
 echo "Applying kernel and network hardening..."
