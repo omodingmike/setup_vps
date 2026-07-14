@@ -112,6 +112,13 @@ fi
 
 # 6. Harden SSH Configuration
 echo "Applying SSH hardening..."
+
+# Back up sshd_config once so a bad edit is always recoverable.
+if [ ! -f /etc/ssh/sshd_config.bak ]; then
+  cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+  echo "Backed up sshd_config to /etc/ssh/sshd_config.bak"
+fi
+
 set_sshd_option() {
   local key="$1"
   local value="$2"
@@ -128,10 +135,27 @@ set_sshd_option Port "$CUSTOM_SSH_PORT"
 set_sshd_option PermitRootLogin no
 set_sshd_option PasswordAuthentication no
 set_sshd_option PubkeyAuthentication yes
+set_sshd_option AllowUsers "$NEW_USER"
+set_sshd_option MaxAuthTries 3
+set_sshd_option LoginGraceTime 20
+set_sshd_option KbdInteractiveAuthentication no
+set_sshd_option ChallengeResponseAuthentication no
+set_sshd_option X11Forwarding no
+set_sshd_option AllowAgentForwarding no
+set_sshd_option PermitEmptyPasswords no
+set_sshd_option ClientAliveInterval 300
+set_sshd_option ClientAliveCountMax 2
 
 # Disable Password Authentication in drop-in files to prevent cloud-init overrides
 mkdir -p /etc/ssh/sshd_config.d
 echo "PasswordAuthentication no" > /etc/ssh/sshd_config.d/60-custom-disable-pass.conf
+
+# Validate the resulting config now — never restart sshd with a broken config.
+if ! sshd -t; then
+  echo "Error: sshd configuration is invalid after hardening. Restoring backup."
+  cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+  exit 1
+fi
 
 # 7. Firewall (UFW)
 if ! command -v ufw &>/dev/null; then
@@ -140,7 +164,8 @@ fi
 echo "Configuring Firewall..."
 ufw default deny incoming
 ufw default allow outgoing
-ufw allow "$CUSTOM_SSH_PORT"/tcp
+# "limit" rate-limits repeated connections from the same IP (brute-force defense).
+ufw limit "$CUSTOM_SSH_PORT"/tcp
 ufw allow http
 ufw allow https
 if ufw status | grep -q "active"; then
@@ -151,20 +176,90 @@ fi
 
 # 8. Fail2Ban (Installs latest available in OS repo)
 if ! command -v fail2ban-server &>/dev/null; then
+  # fail2ban lives in the "universe" component on Ubuntu; enable it if missing.
+  if ! command -v add-apt-repository &>/dev/null; then
+    apt install software-properties-common -y || true
+  fi
+  if command -v add-apt-repository &>/dev/null; then
+    add-apt-repository -y universe || true
+  fi
+  # Refresh the package index so the package can be located.
+  apt update
   apt install fail2ban -y
 fi
 echo "Configuring Fail2Ban..."
 cat <<EOM > /etc/fail2ban/jail.local
+[DEFAULT]
+backend = systemd
+# Never lock out localhost. Add your own static IP here to whitelist it.
+ignoreip = 127.0.0.1/8 ::1
+bantime = 1h
+findtime = 10m
+maxretry = 5
+
 [sshd]
 enabled = true
 port = $CUSTOM_SSH_PORT
 maxretry = 5
 bantime = 1h
+
+# Escalating bans for repeat offenders across all jails.
+[recidive]
+enabled = true
+bantime = 1w
+findtime = 1d
+maxretry = 5
 EOM
 systemctl enable --now fail2ban
 systemctl restart fail2ban
 
-# 9. Final Cleanup & Restart
+# 9. Kernel & Network Hardening (sysctl)
+echo "Applying kernel and network hardening..."
+cat <<EOM > /etc/sysctl.d/99-hardening.conf
+# Reverse-path filtering (anti IP spoofing)
+net.ipv4.conf.all.rp_filter=1
+net.ipv4.conf.default.rp_filter=1
+# SYN flood protection
+net.ipv4.tcp_syncookies=1
+# Ignore ICMP redirects
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv6.conf.all.accept_redirects=0
+net.ipv6.conf.default.accept_redirects=0
+# Do not send ICMP redirects (not a router)
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.default.send_redirects=0
+# Ignore source-routed packets
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+# Log martian (spoofed/impossible) packets
+net.ipv4.conf.all.log_martians=1
+# Ignore broadcast ICMP (smurf attack defense)
+net.ipv4.icmp_echo_ignore_broadcasts=1
+# Protect against bad ICMP error messages
+net.ipv4.icmp_ignore_bogus_error_responses=1
+# Full ASLR
+kernel.randomize_va_space=2
+EOM
+sysctl --system >/dev/null
+
+# 10. Automatic Security Updates
+echo "Enabling automatic security updates..."
+apt install unattended-upgrades -y
+cat <<EOM > /etc/apt/apt.conf.d/20auto-upgrades
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOM
+systemctl enable --now unattended-upgrades || true
+
+# 11. Final Cleanup & Restart
+# Re-validate sshd before the restart as a final safety check.
+if ! sshd -t; then
+  echo "Error: sshd config invalid at final check. Not restarting SSH. Restoring backup."
+  cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+  exit 1
+fi
 systemctl restart ssh || systemctl restart sshd
 
 echo "-------------------------------------------------------"
